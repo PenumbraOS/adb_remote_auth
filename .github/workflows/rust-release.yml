@@ -29,6 +29,7 @@ jobs:
         run: |
           sudo apt-get update --yes
           sudo apt-get install --yes musl-tools linux-libc-dev linux-headers-generic
+          sudo ln -s /usr/include/linux /usr/include/x86_64-linux-musl/linux
 
       - name: Compile
         uses: houseabsolute/actions-rust-cross@v1
