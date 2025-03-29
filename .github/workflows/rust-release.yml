@@ -23,11 +23,16 @@ jobs:
       - name: Checkout this repo
         uses: actions/checkout@v4
 
+      - name: Install cross (for Linux only)
+        if: ${{ matrix.platform.target == 'x86_64-unknown-linux-musl' }}
+        run: cargo install cross
+
       - name: Compile
         uses: houseabsolute/actions-rust-cross@v1
         with:
           target: ${{ matrix.platform.target }}
           args: "--bin adb_cli --release"
+          force-use-cross: ${{ matrix.platform.target == 'x86_64-unknown-linux-musl' }}
 
       - name: Upload
         uses: actions/upload-artifact@v4
