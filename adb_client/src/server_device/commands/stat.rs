@@ -3,8 +3,8 @@ use std::io::{Read, Write};
 use byteorder::{ByteOrder, LittleEndian};
 
 use crate::{
-    models::{AdbServerCommand, AdbStatResponse, SyncCommand},
     ADBServerDevice, Result, RustADBError,
+    models::{AdbServerCommand, AdbStatResponse, SyncCommand},
 };
 
 impl ADBServerDevice {
@@ -31,8 +31,7 @@ impl ADBServerDevice {
                 Ok(data.into())
             }
             x => Err(RustADBError::UnknownResponseType(format!(
-                "Unknown response {}",
-                x
+                "Unknown response {x}"
             ))),
         }
     }

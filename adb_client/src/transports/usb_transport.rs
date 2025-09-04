@@ -1,20 +1,21 @@
 use std::{sync::Arc, time::Duration};
 
 use rusb::{
-    constants::LIBUSB_CLASS_VENDOR_SPEC, Device, DeviceHandle, Direction, GlobalContext,
-    TransferType,
+    Device, DeviceHandle, Direction, GlobalContext, TransferType,
+    constants::LIBUSB_CLASS_VENDOR_SPEC,
 };
 
 use super::{ADBMessageTransport, ADBTransport};
 use crate::{
-    device::{ADBTransportMessage, ADBTransportMessageHeader, MessageCommand},
     Result, RustADBError,
+    device::{ADBTransportMessage, ADBTransportMessageHeader, MessageCommand},
 };
 
 #[derive(Clone, Debug)]
 struct Endpoint {
     iface: u8,
     address: u8,
+    max_packet_size: usize,
 }
 
 /// Transport running on USB
@@ -39,8 +40,7 @@ impl USBTransport {
         }
 
         Err(RustADBError::DeviceNotFound(format!(
-            "cannot find USB device with vendor_id={} and product_id={}",
-            vendor_id, product_id
+            "cannot find USB device with vendor_id={vendor_id} and product_id={product_id}",
         )))
     }
 
@@ -111,6 +111,7 @@ impl USBTransport {
                             let endpoint = Endpoint {
                                 iface: interface_desc.interface_number(),
                                 address: endpoint_desc.address(),
+                                max_packet_size: endpoint_desc.max_packet_size() as usize,
                             };
                             match endpoint_desc.direction() {
                                 Direction::In => {
@@ -136,6 +137,29 @@ impl USBTransport {
 
         Err(RustADBError::USBNoDescriptorFound)
     }
+
+    fn write_bulk_data(&self, data: &[u8], timeout: Duration) -> Result<()> {
+        let endpoint = self.get_write_endpoint()?;
+        let handle = self.get_raw_connection()?;
+        let max_packet_size = endpoint.max_packet_size;
+
+        let mut offset = 0;
+        let data_len = data.len();
+        while offset < data_len {
+            let end = (offset + max_packet_size).min(data_len);
+            let write_amount = handle.write_bulk(endpoint.address, &data[offset..end], timeout)?;
+            offset += write_amount;
+
+            log::trace!("wrote chunk of size {write_amount} - {offset}/{data_len}",)
+        }
+
+        if offset % max_packet_size == 0 {
+            log::trace!("must send final zero-length packet");
+            handle.write_bulk(endpoint.address, &[], timeout)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl ADBTransport for USBTransport {
@@ -145,9 +169,11 @@ impl ADBTransport for USBTransport {
         let (read_endpoint, write_endpoint) = self.find_endpoints(&device)?;
 
         Self::configure_endpoint(&device, &read_endpoint)?;
+        log::debug!("got read endpoint: {read_endpoint:?}");
         self.read_endpoint = Some(read_endpoint);
 
         Self::configure_endpoint(&device, &write_endpoint)?;
+        log::debug!("got write endpoint: {write_endpoint:?}");
         self.write_endpoint = Some(write_endpoint);
 
         self.handle = Some(Arc::new(device));
@@ -157,7 +183,21 @@ impl ADBTransport for USBTransport {
 
     fn disconnect(&mut self) -> crate::Result<()> {
         let message = ADBTransportMessage::new(MessageCommand::Clse, 0, 0, &[]);
-        self.write_message(message)
+        if let Err(e) = self.write_message(message) {
+            log::error!("error while sending CLSE message: {e}");
+        }
+
+        if let Some(handle) = &self.handle {
+            let endpoint = self.read_endpoint.as_ref().or(self.write_endpoint.as_ref());
+            if let Some(endpoint) = &endpoint {
+                match handle.release_interface(endpoint.iface) {
+                    Ok(()) => log::debug!("succesfully released interface"),
+                    Err(e) => log::error!("error while release interface: {e}"),
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -167,29 +207,15 @@ impl ADBMessageTransport for USBTransport {
         message: ADBTransportMessage,
         timeout: Duration,
     ) -> Result<()> {
-        let endpoint = self.get_write_endpoint()?;
-        let handle = self.get_raw_connection()?;
-
         let message_bytes = message.header().as_bytes()?;
-        let mut total_written = 0;
-        loop {
-            total_written +=
-                handle.write_bulk(endpoint.address, &message_bytes[total_written..], timeout)?;
-            if total_written == message_bytes.len() {
-                break;
-            }
-        }
+        self.write_bulk_data(&message_bytes, timeout)?;
+
+        log::trace!("successfully write header: {} bytes", message_bytes.len());
 
         let payload = message.into_payload();
         if !payload.is_empty() {
-            let mut total_written = 0;
-            loop {
-                total_written +=
-                    handle.write_bulk(endpoint.address, &payload[total_written..], timeout)?;
-                if total_written == payload.len() {
-                    break;
-                }
-            }
+            self.write_bulk_data(&payload, timeout)?;
+            log::trace!("successfully write payload: {} bytes", payload.len());
         }
 
         Ok(())
@@ -198,29 +224,26 @@ impl ADBMessageTransport for USBTransport {
     fn read_message_with_timeout(&mut self, timeout: Duration) -> Result<ADBTransportMessage> {
         let endpoint = self.get_read_endpoint()?;
         let handle = self.get_raw_connection()?;
+        let max_packet_size = endpoint.max_packet_size;
 
-        let mut data = [0; 24];
-        let mut total_read = 0;
-        loop {
-            total_read += handle.read_bulk(endpoint.address, &mut data[total_read..], timeout)?;
-            if total_read == data.len() {
-                break;
-            }
+        let mut data = [0u8; 24];
+        let mut offset = 0;
+        while offset < data.len() {
+            let end = (offset + max_packet_size).min(data.len());
+            let chunk = &mut data[offset..end];
+            offset += handle.read_bulk(endpoint.address, chunk, timeout)?;
         }
 
         let header = ADBTransportMessageHeader::try_from(data)?;
-
         log::trace!("received header {header:?}");
 
         if header.data_length() != 0 {
             let mut msg_data = vec![0_u8; header.data_length() as usize];
-            let mut total_read = 0;
-            loop {
-                total_read +=
-                    handle.read_bulk(endpoint.address, &mut msg_data[total_read..], timeout)?;
-                if total_read == msg_data.capacity() {
-                    break;
-                }
+            let mut offset = 0;
+            while offset < msg_data.len() {
+                let end = (offset + max_packet_size).min(msg_data.len());
+                let chunk = &mut msg_data[offset..end];
+                offset += handle.read_bulk(endpoint.address, chunk, timeout)?;
             }
 
             let message = ADBTransportMessage::from_header_and_payload(header, msg_data);

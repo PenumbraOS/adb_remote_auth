@@ -2,9 +2,9 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use rand::Rng;
 use std::io::{Cursor, Read, Seek};
 
-use crate::{constants::BUFFER_SIZE, ADBMessageTransport, AdbStatResponse, Result, RustADBError};
+use crate::{ADBMessageTransport, AdbStatResponse, Result, RustADBError, constants::BUFFER_SIZE};
 
-use super::{models::MessageSubcommand, ADBTransportMessage, MessageCommand};
+use super::{ADBTransportMessage, MessageCommand, models::MessageSubcommand};
 
 /// Generic structure representing an ADB device reachable over an [`ADBMessageTransport`].
 /// Structure is totally agnostic over which transport is truly used.
@@ -144,9 +144,8 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
                         MessageCommand::Write => return Ok(()),
                         c => {
                             return Err(RustADBError::ADBRequestFailed(format!(
-                                "Wrong command received {}",
-                                c
-                            )))
+                                "Wrong command received {c}"
+                            )));
                         }
                     }
                 }

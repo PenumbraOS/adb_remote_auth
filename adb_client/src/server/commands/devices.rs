@@ -1,8 +1,8 @@
 use std::io::Read;
 
 use crate::{
-    models::AdbServerCommand, ADBEmulatorDevice, ADBServer, ADBServerDevice, DeviceLong,
-    DeviceShort, Result, RustADBError,
+    ADBEmulatorDevice, ADBServer, ADBServerDevice, DeviceLong, DeviceShort, Result, RustADBError,
+    models::AdbServerCommand,
 };
 
 impl ADBServer {
@@ -36,7 +36,7 @@ impl ADBServer {
                 break;
             }
 
-            vec_devices.push(DeviceLong::try_from(device.to_vec())?);
+            vec_devices.push(DeviceLong::try_from(device)?);
         }
 
         Ok(vec_devices)

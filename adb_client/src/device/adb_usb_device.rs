@@ -1,7 +1,7 @@
-use rusb::constants::LIBUSB_CLASS_VENDOR_SPEC;
 use rusb::Device;
 use rusb::DeviceDescriptor;
 use rusb::UsbContext;
+use rusb::constants::LIBUSB_CLASS_VENDOR_SPEC;
 use std::fs::read_to_string;
 use std::io::Read;
 use std::io::Write;
@@ -12,28 +12,33 @@ use std::time::Duration;
 use super::adb_message_device::ADBMessageDevice;
 use super::models::MessageCommand;
 use super::{ADBRsaKey, ADBTransportMessage};
-use crate::device::adb_transport_message::{AUTH_RSAPUBLICKEY, AUTH_SIGNATURE, AUTH_TOKEN};
-use crate::device::perform_remote_auth;
-use crate::device::SignResponse;
 use crate::ADBDeviceExt;
 use crate::ADBMessageTransport;
 use crate::ADBTransport;
+use crate::device::SignResponse;
+use crate::device::adb_transport_message::{AUTH_RSAPUBLICKEY, AUTH_SIGNATURE, AUTH_TOKEN};
+use crate::device::perform_remote_auth;
 use crate::{Result, RustADBError, USBTransport};
 
 pub fn read_adb_private_key<P: AsRef<Path>>(private_key_path: P) -> Result<Option<ADBRsaKey>> {
-    Ok(read_to_string(private_key_path.as_ref()).map(|pk| {
-        match ADBRsaKey::new_from_pkcs8(&pk) {
-            Ok(pk) => Some(pk),
-            Err(e) => {
-                log::error!("Error while create RSA private key: {e}");
-                None
-            }
-        }
-    })?)
+    // Try to read the private key file from given path
+    // If the file is not found, return None
+    // If there is another error while reading the file, return this error
+    // Else, return the private key content
+    let pk = match read_to_string(private_key_path.as_ref()) {
+        Ok(pk) => pk,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+
+    match ADBRsaKey::new_from_pkcs8(&pk) {
+        Ok(pk) => Ok(Some(pk)),
+        Err(e) => Err(e),
+    }
 }
 
 /// Search for adb devices with known interface class and subclass values
-fn search_adb_devices() -> Result<Option<(u16, u16)>> {
+pub fn search_adb_devices() -> Result<Option<(u16, u16)>> {
     let mut found_devices = vec![];
     for device in rusb::devices()?.iter() {
         let Ok(des) = device.device_descriptor() else {
@@ -53,13 +58,13 @@ fn search_adb_devices() -> Result<Option<(u16, u16)>> {
         (None, _) => Ok(None),
         (Some(identifiers), None) => Ok(Some(*identifiers)),
         (Some((vid1, pid1)), Some((vid2, pid2))) => Err(RustADBError::DeviceNotFound(format!(
-            "Found two Android devices {:04x}:{:04x} and {:04x}:{:04x}",
-            vid1, pid1, vid2, pid2
+            "Found two Android devices {vid1:04x}:{pid1:04x} and {vid2:04x}:{pid2:04x}",
         ))),
     }
 }
 
-fn is_adb_device<T: UsbContext>(device: &Device<T>, des: &DeviceDescriptor) -> bool {
+/// Check whether a device with given descriptor is an ADB device
+pub fn is_adb_device<T: UsbContext>(device: &Device<T>, des: &DeviceDescriptor) -> bool {
     const ADB_SUBCLASS: u8 = 0x42;
     const ADB_PROTOCOL: u8 = 0x1;
 
@@ -149,9 +154,15 @@ impl ADBUSBDevice {
         private_key_path: PathBuf,
         remote_auth_url: Option<String>,
     ) -> Result<Self> {
-        let private_key = match read_adb_private_key(private_key_path) {
-            Ok(Some(pk)) => pk,
-            _ => ADBRsaKey::new_random()?,
+        let private_key = match read_adb_private_key(&private_key_path)? {
+            Some(pk) => pk,
+            None => {
+                log::warn!(
+                    "No private key found at path {}. Using a temporary random one.",
+                    private_key_path.display()
+                );
+                ADBRsaKey::new_random()?
+            }
         };
 
         let mut s = Self {
@@ -202,6 +213,11 @@ impl ADBUSBDevice {
         self.get_transport_mut().write_message(message)?;
 
         let message = self.get_transport_mut().read_message()?;
+        // If the device returned CNXN instead of AUTH it does not require authentication,
+        // so we can skip the auth steps.
+        if message.header().command() == MessageCommand::Cnxn {
+            return Ok(());
+        }
         message.assert_command(MessageCommand::Auth)?;
 
         // At this point, we should have receive an AUTH message with arg0 == 1
@@ -210,7 +226,7 @@ impl ADBUSBDevice {
             v => {
                 return Err(RustADBError::ADBRequestFailed(format!(
                     "Received AUTH message with type != 1 ({v})"
-                )))
+                )));
             }
         };
 
@@ -267,7 +283,7 @@ impl ADBUSBDevice {
             Err(err) => {
                 return Err(RustADBError::ADBRequestFailed(format!(
                     "Authentication failed. {err:?}"
-                )))
+                )));
             }
         };
 

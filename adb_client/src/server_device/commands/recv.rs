@@ -1,7 +1,6 @@
 use crate::{
-    constants,
+    ADBServerDevice, Result, constants,
     models::{AdbServerCommand, SyncCommand},
-    ADBServerDevice, Result,
 };
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -43,18 +42,14 @@ impl<R: Read> Read for ADBRecvCommandReader<R> {
                     let mut error_msg = vec![0; length];
                     self.inner.read_exact(&mut error_msg)?;
 
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!(
-                            "ADB request failed: {}",
-                            String::from_utf8_lossy(&error_msg)
-                        ),
-                    ))
+                    Err(std::io::Error::other(format!(
+                        "ADB request failed: {}",
+                        String::from_utf8_lossy(&error_msg)
+                    )))
                 }
-                _ => Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Unknown response from device {:#?}", header),
-                )),
+                _ => Err(std::io::Error::other(format!(
+                    "Unknown response from device {header:#?}"
+                ))),
             }
         } else {
             // Computing minimum to ensure to stop reading before next header...

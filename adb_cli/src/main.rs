@@ -10,6 +10,10 @@ mod utils;
 use adb_client::{
     ADBDeviceExt, ADBServer, ADBServerDevice, ADBTcpDevice, ADBUSBDevice, MDNSDiscoveryService,
 };
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use adb_termios::ADBTermios;
+
 use anyhow::Result;
 use clap::Parser;
 use handlers::{handle_emulator_commands, handle_host_commands, handle_local_commands};
@@ -20,10 +24,16 @@ use std::io::Write;
 use std::path::Path;
 use utils::setup_logger;
 
-fn main() -> () {
+fn main() {
+    // This depends on `clap`
     let opts = Opts::parse();
 
-    setup_logger(opts.debug);
+    // SAFETY:
+    // We are assuming the entire process is single-threaded
+    // at this point.
+    // This seems true for the current version of `clap`,
+    // but there's no guarantee for future updates
+    unsafe { setup_logger(opts.debug) };
 
     match execute(opts) {
         Ok(_) => (),
@@ -53,7 +63,7 @@ fn execute(opts: Opts) -> Result<()> {
             match server_command.command {
                 LocalCommand::DeviceCommands(device_commands) => (device.boxed(), device_commands),
                 LocalCommand::LocalDeviceCommand(local_device_command) => {
-                    return handle_local_commands(device, local_device_command)
+                    return handle_local_commands(device, local_device_command);
                 }
             }
         }
@@ -76,7 +86,9 @@ fn execute(opts: Opts) -> Result<()> {
                     None => ADBUSBDevice::autodetect(usb_command.remote_auth_url)?,
                 },
                 _ => {
-                    anyhow::bail!("please either supply values for both the --vendor-id and --product-id flags or none.");
+                    anyhow::bail!(
+                        "please either supply values for both the --vendor-id and --product-id flags or none."
+                    );
                 }
             };
             (device.boxed(), usb_command.commands)
@@ -137,10 +149,10 @@ fn execute(opts: Opts) -> Result<()> {
         }
         DeviceCommands::Stat { path } => {
             let stat_response = device.stat(&path)?;
-            println!("{}", stat_response);
+            println!("{stat_response}");
         }
         DeviceCommands::Reboot { reboot_type } => {
-            log::info!("Reboots device in mode {:?}", reboot_type);
+            log::info!("Reboots device in mode {reboot_type:?}");
             device.reboot(reboot_type.into())?
         }
         DeviceCommands::Push { filename, path } => {
@@ -157,7 +169,7 @@ fn execute(opts: Opts) -> Result<()> {
             device.install(&path)?;
         }
         DeviceCommands::Uninstall { package } => {
-            log::info!("Uninstalling the package {}...", package);
+            log::info!("Uninstalling the package {package}...");
             device.uninstall(&package)?;
         }
         DeviceCommands::Framebuffer { path } => {
